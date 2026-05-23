@@ -605,6 +605,36 @@ void WalletModel::listCoins(std::map<QString, std::vector<COutput> >& mapCoins) 
     }
 }
 
+void WalletModel::listMinedRewards(std::vector<std::pair<qint64, CAmount> >& result) const
+{
+    // Every block this wallet mined is recorded as a coinbase transaction.
+    // Report each as (block time, reward credited to this wallet) so the
+    // Mining Rewards chart can plot the real earning history. Immature
+    // coinbase counts too: the reward was earned, it is just not yet spendable.
+    result.clear();
+    LOCK2(cs_main, wallet->cs_wallet);
+    for (const std::pair<const uint256, CWalletTx>& entry : wallet->mapWallet) {
+        const CWalletTx& wtx = entry.second;
+        if (!wtx.IsCoinBase())
+            continue;
+        if (wtx.GetDepthInMainChain() < 1)
+            continue;   // orphaned or conflicted coinbase, not in the main chain
+        CAmount reward = 0;
+        for (const CTxOut& out : wtx.tx->vout) {
+            if (wallet->IsMine(out) & ISMINE_SPENDABLE)
+                reward += out.nValue;
+        }
+        if (reward <= 0)
+            continue;
+        // Prefer the block's own timestamp; fall back to the wallet tx time.
+        qint64 when = (qint64)wtx.GetTxTime();
+        BlockMap::iterator mi = mapBlockIndex.find(wtx.hashBlock);
+        if (mi != mapBlockIndex.end() && mi->second)
+            when = (qint64)mi->second->GetBlockTime();
+        result.emplace_back(when, reward);
+    }
+}
+
 WalletModel::ImmatureMaturity WalletModel::getImmatureMaturity() const
 {
     // Walk the wallet's coinbase transactions that have not yet matured and

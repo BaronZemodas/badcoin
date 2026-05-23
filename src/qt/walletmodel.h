@@ -198,6 +198,12 @@ public:
     bool isSpent(const COutPoint& outpoint) const;
     void listCoins(std::map<QString, std::vector<COutput> >& mapCoins) const;
 
+    // Mined-reward history for the Mining Rewards chart. Each block this
+    // wallet mined is a coinbase transaction; this returns one
+    // {block unix time, reward credited} pair per mined block.
+    void listMinedRewards(std::vector<std::pair<qint64, CAmount> >& result) const;
+
+
     // Coinbase maturity summary for the Overview "Coin Maturity" panel.
     struct ImmatureMaturity {
         int     count = 0;          // immature coinbase transactions
