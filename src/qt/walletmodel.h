@@ -215,6 +215,9 @@ public:
     };
     ImmatureMaturity getImmatureMaturity() const;
 
+    // Per-address balances for the My Addresses page: maps an address string
+    // to {spendable, immature} amounts. immature is coinbase still locked.
+    void listAddressBalances(std::map<QString, std::pair<CAmount, CAmount> >& result) const;
 
     bool isLockedCoin(uint256 hash, unsigned int n) const;
     void lockCoin(COutPoint& output);
