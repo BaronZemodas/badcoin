@@ -62,6 +62,7 @@ private Q_SLOTS:
     void on_btnCopyAddress_clicked();
     void onTogglePrivateKey();
     void onCopyPrivateKey();
+    void onSaveKeysPdf();
 
     void update();
 
@@ -78,6 +79,7 @@ private:
     class QLabel *privateKeyValue;
     class QPushButton *btnTogglePrivateKey;
     class QPushButton *btnCopyPrivateKey;
+    class QPushButton *btnSaveKeysPdf;   // exports public + private key (with QRs) to a PDF
     bool privateKeyShown;
     QString cachedPrivateKey;     // only kept while the panel is visible
 };

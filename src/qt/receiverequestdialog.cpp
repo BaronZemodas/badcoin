@@ -20,6 +20,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPdfWriter>
 #include <QPushButton>
 #include <QPixmap>
 #if QT_VERSION < 0x050000
@@ -103,6 +104,7 @@ ReceiveRequestDialog::ReceiveRequestDialog(QWidget *parent) :
     privateKeyValue(nullptr),
     btnTogglePrivateKey(nullptr),
     btnCopyPrivateKey(nullptr),
+    btnSaveKeysPdf(nullptr),
     privateKeyShown(false)
 {
     ui->setupUi(this);
@@ -161,6 +163,10 @@ ReceiveRequestDialog::ReceiveRequestDialog(QWidget *parent) :
     QHBoxLayout *pkBtnRow = new QHBoxLayout();
     btnCopyPrivateKey = new QPushButton(tr("Copy Private Key"), privateKeyPanel);
     pkBtnRow->addWidget(btnCopyPrivateKey);
+    btnSaveKeysPdf = new QPushButton(tr("Save as PDF..."), privateKeyPanel);
+    btnSaveKeysPdf->setToolTip(tr("Save the public address and the private key, with QR "
+                                  "codes for each, as a printable PDF."));
+    pkBtnRow->addWidget(btnSaveKeysPdf);
     pkBtnRow->addStretch();
     pkLayout->addLayout(pkBtnRow);
 
@@ -190,6 +196,7 @@ ReceiveRequestDialog::ReceiveRequestDialog(QWidget *parent) :
 
     connect(btnTogglePrivateKey, SIGNAL(clicked()), this, SLOT(onTogglePrivateKey()));
     connect(btnCopyPrivateKey,   SIGNAL(clicked()), this, SLOT(onCopyPrivateKey()));
+    connect(btnSaveKeysPdf,      SIGNAL(clicked()), this, SLOT(onSaveKeysPdf()));
 }
 
 ReceiveRequestDialog::~ReceiveRequestDialog()
@@ -413,4 +420,111 @@ void ReceiveRequestDialog::onCopyPrivateKey()
            "else (any harmless text) to evict it from the clipboard. Clipboard "
            "history tools and other apps can read it for as long as it sits there.")
     );
+}
+
+void ReceiveRequestDialog::onSaveKeysPdf()
+{
+    // Only available once the key has been revealed (and the user passed the
+    // warning in onTogglePrivateKey).
+    if (cachedPrivateKey.isEmpty()) {
+        QMessageBox::information(this, tr("Show the private key first"),
+            tr("Click \"Show Private Key\" and confirm the warning, then use Save as PDF."));
+        return;
+    }
+
+    QMessageBox::StandardButton reply = QMessageBox::warning(
+        this,
+        tr("Save keys as a PDF?"),
+        tr("This PDF will contain BOTH the public address and the FULL private key, "
+           "with a QR code for each.\n\n"
+           "Anyone who gets this file, or a photo of it, can spend every coin at "
+           "this address. Print it, keep the paper somewhere safe and offline, "
+           "then delete the PDF file.\n\n"
+           "Continue?"),
+        QMessageBox::Cancel | QMessageBox::Yes,
+        QMessageBox::Cancel
+    );
+    if (reply != QMessageBox::Yes)
+        return;
+
+    QString fn = GUIUtil::getSaveFileName(this, tr("Save keys as PDF"), QString(),
+                                          tr("PDF file (*.pdf)"), nullptr);
+    if (fn.isEmpty())
+        return;
+
+    QPdfWriter writer(fn);
+    writer.setPageSize(QPagedPaintDevice::A4);
+    writer.setResolution(300);
+
+    QPainter painter;
+    if (!painter.begin(&writer)) {
+        QMessageBox::critical(this, tr("Error"),
+            tr("Could not open the PDF file for writing."));
+        return;
+    }
+
+    const int res      = writer.resolution();   // dots per inch
+    const int pageW    = writer.width();         // page width in dots
+    const int margin   = res;                    // 1 inch margin
+    const int x        = margin;
+    const int contentW = pageW - 2 * margin;
+    const int qrSize   = res * 2;                // 2 inch QR codes
+    const int textX    = x + qrSize + res / 2;
+    const int textW    = contentW - qrSize - res / 2;
+    int y = margin;
+
+    QColor warnRed(0xc0, 0x39, 0x2b);
+    QFont f = painter.font();
+
+    // Title
+    f.setBold(true); f.setPointSize(22);
+    painter.setFont(f);
+    painter.drawText(QRect(x, y, contentW, res), Qt::AlignHCenter, tr("Badcoin Wallet Keys"));
+    y += res * 3 / 2;
+
+    // Public address
+    f.setBold(true); f.setPointSize(15);
+    painter.setFont(f);
+    painter.setPen(Qt::black);
+    painter.drawText(QRect(x, y, contentW, res / 2), Qt::AlignLeft,
+                     tr("Public Address  (safe to share)"));
+    y += res * 2 / 3;
+    if (ui->lblQRCode->pixmap() && !ui->lblQRCode->pixmap()->isNull())
+        painter.drawImage(QRect(x, y, qrSize, qrSize), ui->lblQRCode->pixmap()->toImage());
+    f.setBold(false); f.setPointSize(12); f.setFamily("Courier New");
+    painter.setFont(f);
+    painter.drawText(QRect(textX, y, textW, qrSize),
+                     Qt::AlignVCenter | Qt::TextWordWrap, info.address);
+    y += qrSize + res / 2;
+
+    // Private key
+    f.setBold(true); f.setPointSize(15); f.setFamily(font().family());
+    painter.setFont(f);
+    painter.setPen(warnRed);
+    painter.drawText(QRect(x, y, contentW, res / 2), Qt::AlignLeft,
+                     tr("Private Key  (DO NOT SHARE)"));
+    y += res * 2 / 3;
+    painter.setPen(Qt::black);
+    if (privateKeyQR->pixmap() && !privateKeyQR->pixmap()->isNull())
+        painter.drawImage(QRect(x, y, qrSize, qrSize), privateKeyQR->pixmap()->toImage());
+    f.setBold(false); f.setPointSize(12); f.setFamily("Courier New");
+    painter.setFont(f);
+    painter.drawText(QRect(textX, y, textW, qrSize),
+                     Qt::AlignVCenter | Qt::TextWordWrap, cachedPrivateKey);
+    y += qrSize + res / 2;
+
+    // Warning footer
+    f.setBold(true); f.setPointSize(11); f.setFamily(font().family());
+    painter.setFont(f);
+    painter.setPen(warnRed);
+    painter.drawText(QRect(x, y, contentW, res * 2), Qt::AlignLeft | Qt::TextWordWrap,
+                     tr("WARNING: anyone who has this private key, or a photo of its QR "
+                        "code, can spend every coin at this address. Keep this page "
+                        "offline and secret."));
+
+    painter.end();
+
+    QMessageBox::information(this, tr("PDF saved"),
+        tr("Your keys were saved to:\n%1\n\nStore it safely, and delete the file when "
+           "you no longer need it.").arg(fn));
 }
