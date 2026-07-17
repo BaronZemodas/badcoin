@@ -314,19 +314,29 @@ void MyAddressesPage::onRemove()
     if (addr.isEmpty())
         return;
 
-    if (QMessageBox::question(this, tr("Remove label"),
-            tr("Clear the label for this address?\n\n%1\n\n"
-               "The address itself stays in the wallet; only its label is removed.").arg(addr),
+    // Only zero-balance addresses can be removed. "Balance" here is the
+    // address total: spendable plus immature mined coins.
+    std::map<QString, std::pair<CAmount, CAmount> > balances;
+    walletModel->listAddressBalances(balances);
+    std::map<QString, std::pair<CAmount, CAmount> >::const_iterator it = balances.find(addr);
+    const CAmount total = (it != balances.end()) ? (it->second.first + it->second.second) : 0;
+    if (total != 0) {
+        QMessageBox::warning(this, tr("Cannot remove address"),
+            tr("This address holds a balance (including any immature mined coins), so it "
+               "cannot be removed. Only addresses with a zero balance can be removed."));
+        return;
+    }
+
+    if (QMessageBox::question(this, tr("Remove address"),
+            tr("Remove this address from the wallet's address list?\n\n%1\n\n"
+               "The address has a zero balance, so nothing is lost.").arg(addr),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
 
-    AddressTableModel *atm = walletModel->getAddressTableModel();
-    if (!atm)
+    if (!walletModel->removeReceivingAddress(addr)) {
+        QMessageBox::warning(this, tr("Remove failed"),
+            tr("The address could not be removed."));
         return;
-    const int row = atm->lookupAddress(addr);
-    if (row < 0)
-        return;
-    atm->setData(atm->index(row, AddressTableModel::Label, QModelIndex()),
-                 QString(), Qt::EditRole);
+    }
     refresh();
 }
