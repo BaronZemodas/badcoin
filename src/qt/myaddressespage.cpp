@@ -32,6 +32,7 @@ MyAddressesPage::MyAddressesPage(const PlatformStyle *_platformStyle, QWidget *p
     : QWidget(parent)
     , platformStyle(_platformStyle)
     , walletModel(nullptr)
+    , m_populating(false)
     , table(nullptr)
     , newButton(nullptr)
     , copyButton(nullptr)
@@ -53,7 +54,9 @@ MyAddressesPage::MyAddressesPage(const PlatformStyle *_platformStyle, QWidget *p
     headers << tr("Label") << tr("Address") << tr("Balance");
     table->setHorizontalHeaderLabels(headers);
     table->verticalHeader()->setVisible(false);
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setEditTriggers(QAbstractItemView::DoubleClicked
+                           | QAbstractItemView::SelectedClicked
+                           | QAbstractItemView::EditKeyPressed);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setAlternatingRowColors(true);
@@ -83,6 +86,8 @@ MyAddressesPage::MyAddressesPage(const PlatformStyle *_platformStyle, QWidget *p
     connect(exportKeyButton, SIGNAL(clicked()), this, SLOT(onExportPrivateKey()));
     connect(removeButton,    SIGNAL(clicked()), this, SLOT(onRemove()));
     connect(table,           SIGNAL(itemSelectionChanged()), this, SLOT(updateButtons()));
+    connect(table,           SIGNAL(itemChanged(QTableWidgetItem*)),
+            this,            SLOT(onItemChanged(QTableWidgetItem*)));
 
     updateButtons();
 }
@@ -125,6 +130,7 @@ void MyAddressesPage::refresh()
         ? walletModel->getOptionsModel()->getDisplayUnit()
         : BitcoinUnits::BTC;
 
+    m_populating = true;
     table->setRowCount(0);
     int rowToSelect = -1;
 
@@ -158,6 +164,10 @@ void MyAddressesPage::refresh()
         QTableWidgetItem *addressItem = new QTableWidgetItem(address);
         QTableWidgetItem *balanceItem = new QTableWidgetItem(balanceText);
 
+        // Only the Label cell is editable (double-click to rename).
+        addressItem->setFlags(addressItem->flags() & ~Qt::ItemIsEditable);
+        balanceItem->setFlags(balanceItem->flags() & ~Qt::ItemIsEditable);
+
         QFont mono = addressItem->font();
         mono.setStyleHint(QFont::TypeWriter);
         mono.setFamily(QStringLiteral("Monospace"));
@@ -179,6 +189,7 @@ void MyAddressesPage::refresh()
     if (rowToSelect >= 0)
         table->selectRow(rowToSelect);
 
+    m_populating = false;
     updateButtons();
 }
 
@@ -216,6 +227,25 @@ void MyAddressesPage::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     refresh();
+}
+
+void MyAddressesPage::onItemChanged(QTableWidgetItem *item)
+{
+    // Ignore the item changes refresh() makes while it rebuilds the table.
+    if (m_populating || !item || item->column() != COL_LABEL || !walletModel)
+        return;
+    QTableWidgetItem *addrItem = table->item(item->row(), COL_ADDRESS);
+    if (!addrItem)
+        return;
+    AddressTableModel *atm = walletModel->getAddressTableModel();
+    if (!atm)
+        return;
+    const int row = atm->lookupAddress(addrItem->text());
+    if (row < 0)
+        return;
+    // Persist the edited label to the wallet's address book.
+    atm->setData(atm->index(row, AddressTableModel::Label, QModelIndex()),
+                 item->text(), Qt::EditRole);
 }
 
 void MyAddressesPage::onNew()
