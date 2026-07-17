@@ -9,12 +9,18 @@
 #include <qt/guiconstants.h>
 #include <qt/guiutil.h>
 #include <qt/optionsmodel.h>
+#include <qt/rpcconsole.h>
 #include <QPainter>
+#include <QBoxLayout>
 #include <QClipboard>
 #include <QDrag>
+#include <QFrame>
+#include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QPixmap>
 #if QT_VERSION < 0x050000
 #include <QUrl>
@@ -91,7 +97,13 @@ void QRImageWidget::contextMenuEvent(QContextMenuEvent *event)
 ReceiveRequestDialog::ReceiveRequestDialog(QWidget *parent) :
     QDialog(parent),
     ui(new Ui::ReceiveRequestDialog),
-    model(0)
+    model(0),
+    privateKeyPanel(nullptr),
+    privateKeyQR(nullptr),
+    privateKeyValue(nullptr),
+    btnTogglePrivateKey(nullptr),
+    btnCopyPrivateKey(nullptr),
+    privateKeyShown(false)
 {
     ui->setupUi(this);
 
@@ -101,6 +113,83 @@ ReceiveRequestDialog::ReceiveRequestDialog(QWidget *parent) :
 #endif
 
     connect(ui->btnSaveAs, SIGNAL(clicked()), ui->lblQRCode, SLOT(saveImage()));
+
+    // Private key reveal panel.
+    // Built programmatically so we do not have to touch the .ui file. Hidden
+    // by default. Becomes visible only after the user clicks "Show Private Key"
+    // and confirms the warning dialog.
+    privateKeyPanel = new QFrame(this);
+    privateKeyPanel->setFrameShape(QFrame::StyledPanel);
+    privateKeyPanel->setStyleSheet(
+        "QFrame { background: #fff5f5; border: 1px solid #e69292; border-radius: 6px; }"
+    );
+    QVBoxLayout *pkLayout = new QVBoxLayout(privateKeyPanel);
+    pkLayout->setContentsMargins(12, 10, 12, 12);
+    pkLayout->setSpacing(6);
+
+    QLabel *pkHeader = new QLabel(tr("Private Key  (DO NOT SHARE)"), privateKeyPanel);
+    pkHeader->setStyleSheet("QLabel { color: #c0392b; font-weight: bold; font-size: 13pt; background: transparent; border: 0; }");
+    pkLayout->addWidget(pkHeader);
+
+    QLabel *pkExplain = new QLabel(
+        tr("Anyone who sees this key can spend every coin at the address above. "
+           "Never paste it into a website, screenshot it, or send it in chat. "
+           "The QR below can be scanned by the Badcoin iPhone wallet to import this key."),
+        privateKeyPanel);
+    pkExplain->setStyleSheet("QLabel { color: #6d1f14; background: transparent; border: 0; }");
+    pkExplain->setWordWrap(true);
+    pkLayout->addWidget(pkExplain);
+
+    // QR image of the WIF, centered. Sized to match the public-address QR up top.
+    privateKeyQR = new QLabel(privateKeyPanel);
+    privateKeyQR->setAlignment(Qt::AlignCenter);
+    privateKeyQR->setMinimumSize(240, 240);
+    privateKeyQR->setStyleSheet(
+        "QLabel { background: #ffffff; border: 1px solid #e69292; border-radius: 4px; padding: 8px; }"
+    );
+    pkLayout->addWidget(privateKeyQR, 0, Qt::AlignCenter);
+
+    privateKeyValue = new QLabel(privateKeyPanel);
+    privateKeyValue->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    privateKeyValue->setStyleSheet(
+        "QLabel { background: #ffffff; border: 1px dashed #c0392b; border-radius: 4px; "
+        "padding: 8px; font-family: 'Menlo', 'Courier New', monospace; color: #222; }"
+    );
+    privateKeyValue->setWordWrap(true);
+    pkLayout->addWidget(privateKeyValue);
+
+    QHBoxLayout *pkBtnRow = new QHBoxLayout();
+    btnCopyPrivateKey = new QPushButton(tr("Copy Private Key"), privateKeyPanel);
+    pkBtnRow->addWidget(btnCopyPrivateKey);
+    pkBtnRow->addStretch();
+    pkLayout->addLayout(pkBtnRow);
+
+    privateKeyPanel->setVisible(false);
+
+    // Insert the panel into the main vertical layout, above the bottom button row.
+    if (auto *mainLayout = qobject_cast<QVBoxLayout*>(this->layout())) {
+        // Second-to-last item is the bottom button row; insert our panel before it.
+        mainLayout->insertWidget(mainLayout->count() - 1, privateKeyPanel);
+    }
+
+    // Add the toggle button to the bottom button row.
+    btnTogglePrivateKey = new QPushButton(tr("Show Private Key"), this);
+    btnTogglePrivateKey->setToolTip(tr("Reveal the private key (WIF) for this address. "
+                                       "A warning will be shown first."));
+    // The .ui places the copy buttons in a horizontal layout at the bottom of the
+    // vertical layout. Find it and insert our toggle button before the spacer.
+    if (auto *mainLayout = qobject_cast<QVBoxLayout*>(this->layout())) {
+        QLayoutItem *lastItem = mainLayout->itemAt(mainLayout->count() - 1);
+        if (lastItem && lastItem->layout()) {
+            if (auto *hbox = qobject_cast<QHBoxLayout*>(lastItem->layout())) {
+                // Insert after btnSaveAs (index 2) and before the spacer.
+                hbox->insertWidget(3, btnTogglePrivateKey);
+            }
+        }
+    }
+
+    connect(btnTogglePrivateKey, SIGNAL(clicked()), this, SLOT(onTogglePrivateKey()));
+    connect(btnCopyPrivateKey,   SIGNAL(clicked()), this, SLOT(onCopyPrivateKey()));
 }
 
 ReceiveRequestDialog::~ReceiveRequestDialog()
@@ -127,8 +216,8 @@ void ReceiveRequestDialog::setInfo(const SendCoinsRecipient &_info)
 
 void ReceiveRequestDialog::update()
 {
-    if(!model)
-        return;
+    // model may be null when this dialog is opened from the Address Book page
+    // (which just wants to show QR + keys and does not care about display units).
     QString target = info.label;
     if(target.isEmpty())
         target = info.address;
@@ -138,11 +227,13 @@ void ReceiveRequestDialog::update()
     ui->btnSaveAs->setEnabled(false);
     QString html;
     html += "<html><font face='verdana, arial, helvetica, sans-serif'>";
+    html += "<b style='font-size:12pt;'>"+tr("Public Address")+"</b><br>";
+    html += "<span style='color:#666;'>"+tr("Safe to share. This is where coins will be received.")+"</span><br><br>";
     html += "<b>"+tr("Payment information")+"</b><br>";
     html += "<b>"+tr("URI")+"</b>: ";
     html += "<a href=\""+uri+"\">" + GUIUtil::HtmlEscape(uri) + "</a><br>";
     html += "<b>"+tr("Address")+"</b>: " + GUIUtil::HtmlEscape(info.address) + "<br>";
-    if(info.amount)
+    if(info.amount && model)
         html += "<b>"+tr("Amount")+"</b>: " + BitcoinUnits::formatHtmlWithUnit(model->getDisplayUnit(), info.amount) + "<br>";
     if(!info.label.isEmpty())
         html += "<b>"+tr("Label")+"</b>: " + GUIUtil::HtmlEscape(info.label) + "<br>";
@@ -209,4 +300,117 @@ void ReceiveRequestDialog::on_btnCopyURI_clicked()
 void ReceiveRequestDialog::on_btnCopyAddress_clicked()
 {
     GUIUtil::setClipboard(info.address);
+}
+
+void ReceiveRequestDialog::onTogglePrivateKey()
+{
+    if (privateKeyShown) {
+        // Hide: clear from display and drop the cached copy. Also wipe the QR
+        // pixmap so the key image is not sitting in widget memory any longer
+        // than necessary.
+        privateKeyPanel->setVisible(false);
+        privateKeyValue->clear();
+        privateKeyQR->clear();
+        cachedPrivateKey.clear();
+        btnTogglePrivateKey->setText(tr("Show Private Key"));
+        privateKeyShown = false;
+        return;
+    }
+
+    // Warn the user explicitly before revealing.
+    QMessageBox::StandardButton reply = QMessageBox::warning(
+        this,
+        tr("Reveal private key?"),
+        tr("You are about to reveal the private key for this address.\n\n"
+           "Anyone who sees, photographs, or records the key can spend every "
+           "coin sent to this address, now or in the future.\n"
+           "Never paste it into a website, exchange, support chat, or screenshot.\n"
+           "The key will be shown on-screen only. You can hide it again by "
+           "clicking the button a second time.\n\n"
+           "Continue?"),
+        QMessageBox::Cancel | QMessageBox::Yes,
+        QMessageBox::Cancel
+    );
+    if (reply != QMessageBox::Yes) {
+        return;
+    }
+
+    // Fetch via RPC: dumpprivkey <address>. If the wallet is encrypted, the node
+    // returns an error about the wallet being locked; surface that cleanly.
+    std::string cmd = "dumpprivkey \"" + info.address.toStdString() + "\"";
+    std::string result;
+    bool ok = false;
+    try {
+        ok = RPCConsole::RPCExecuteCommandLine(result, cmd);
+    } catch (const std::exception &e) {
+        QMessageBox::critical(this, tr("Error"), QString::fromUtf8(e.what()));
+        return;
+    } catch (...) {
+        QMessageBox::critical(this, tr("Error"), tr("Unknown error retrieving private key."));
+        return;
+    }
+    if (!ok) {
+        QMessageBox::critical(this, tr("Error"), QString::fromStdString(result));
+        return;
+    }
+
+    // Result is the WIF wrapped in quotes: "Lxxx..."
+    QString wif = QString::fromStdString(result).trimmed();
+    if (wif.startsWith('"') && wif.endsWith('"')) {
+        wif = wif.mid(1, wif.length() - 2);
+    }
+    if (wif.isEmpty()) {
+        QMessageBox::critical(this, tr("Error"), tr("Received an empty private key from the wallet."));
+        return;
+    }
+
+    cachedPrivateKey = wif;
+    privateKeyValue->setText(wif);
+
+    // Generate a QR image of the raw WIF string (no URI prefix, since the iOS
+    // app's QR scanner reads WIF strings directly through the same Import path).
+#ifdef USE_QRCODE
+    {
+        const int qrSize = 240;
+        QRcode *code = QRcode_encodeString(wif.toUtf8().constData(), 0, QR_ECLEVEL_M, QR_MODE_8, 1);
+        if (code) {
+            QImage qrImg(code->width + 8, code->width + 8, QImage::Format_RGB32);
+            qrImg.fill(0xffffff);
+            unsigned char *p = code->data;
+            for (int y = 0; y < code->width; y++) {
+                for (int x = 0; x < code->width; x++) {
+                    qrImg.setPixel(x + 4, y + 4, ((*p & 1) ? 0x000000 : 0xffffff));
+                    p++;
+                }
+            }
+            QRcode_free(code);
+            QPixmap pm = QPixmap::fromImage(qrImg.scaled(qrSize, qrSize, Qt::KeepAspectRatio, Qt::FastTransformation));
+            privateKeyQR->setPixmap(pm);
+        } else {
+            privateKeyQR->setText(tr("(Failed to encode private key as QR)"));
+        }
+    }
+#else
+    privateKeyQR->setText(tr("(QR support not compiled in)"));
+#endif
+
+    privateKeyPanel->setVisible(true);
+    btnTogglePrivateKey->setText(tr("Hide Private Key"));
+    privateKeyShown = true;
+}
+
+void ReceiveRequestDialog::onCopyPrivateKey()
+{
+    if (cachedPrivateKey.isEmpty()) return;
+    // Clipboard copy. Warn once about history / paste-hijack risks. The message
+    // box is modal so it is impossible to click without acknowledging.
+    GUIUtil::setClipboard(cachedPrivateKey);
+    QMessageBox::information(
+        this,
+        tr("Private key copied"),
+        tr("The private key is now in your clipboard.\n\n"
+           "Paste it into the destination app immediately, then copy something "
+           "else (any harmless text) to evict it from the clipboard. Clipboard "
+           "history tools and other apps can read it for as long as it sits there.")
+    );
 }

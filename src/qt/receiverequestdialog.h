@@ -60,6 +60,8 @@ public:
 private Q_SLOTS:
     void on_btnCopyURI_clicked();
     void on_btnCopyAddress_clicked();
+    void onTogglePrivateKey();
+    void onCopyPrivateKey();
 
     void update();
 
@@ -67,6 +69,17 @@ private:
     Ui::ReceiveRequestDialog *ui;
     OptionsModel *model;
     SendCoinsRecipient info;
+
+    // Private-key reveal section, added programmatically so we do not have
+    // to regenerate the .ui file. Hidden by default; visible only after the
+    // user clicks "Show Private Key" and confirms in a warning dialog.
+    class QFrame *privateKeyPanel;
+    class QLabel *privateKeyQR;       // QR image of the WIF, scannable by the iOS app
+    class QLabel *privateKeyValue;
+    class QPushButton *btnTogglePrivateKey;
+    class QPushButton *btnCopyPrivateKey;
+    bool privateKeyShown;
+    QString cachedPrivateKey;     // only kept while the panel is visible
 };
 
 #endif // BITCOIN_QT_RECEIVEREQUESTDIALOG_H
